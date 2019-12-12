@@ -1,10 +1,17 @@
 #include <mbed.h>
 #include <./../lib/Omni/Omni.hpp>
 #include<vector>
-#define DATA_LEN 4
+#define DATA_LEN 15
 
 enum Keys{
   X,Y,R
+};
+enum eTrackingState{
+        SYSTEM_NOT_READY=-1,
+        NO_IMAGES_YET=0,
+        NOT_INITIALIZED=1,
+        OK=2,
+        LOST=3
 };
 DigitalOut led(LED3);
 
@@ -25,39 +32,48 @@ float current_angle = -90.0f*3.14f/180.0f;
 float rec_buf[DATA_LEN] = {};
 int rec_index = 0;
 bool rec_found = false;
+bool ems = true;
 
-float npos[3]= {0.0,0.0,0.0};
+//現在地
+vector<float> npos(3,0);
+
 int dir = 0;
-bool frame_init = false;
+//カメラが自分の位置を見失っていないか
+int frame_init = eTrackingState::SYSTEM_NOT_READY;
 
+//受信
 void Receive();
+//受信データの解析
 void Decode(char keys);
 
 int main() {
   wheel_pwm[0].period_us(500);
-  pc.baud(115200);
+  pc.baud(9600);
   // put your setup code here, to run once:
 
   while(1) {
     LoopTimer.start();
 
-    // for(int i=0; i<3; i++) velocityVector[i] = 0.0f;
+    for(int i=0; i<3; i++) velocityVector[i] = 0.0f;
     Receive();
 
-    if(frame_init){
-      velocityVector[1] = 0.5f;
+    if(!ems){
+      if(frame_init == eTrackingState::OK){
+        velocityVector[1] = 0.3f;
+      }
+      else
+      {
+        velocityVector[1] = -0.3f;
+      }
+      
+      if(npos[2] < -10){
+        velocityVector[2] = 0.1f;
+      }
+      else if(npos[2] > 10){
+        velocityVector[2] = -0.1f;
+      }
     }
-    else
-    {
-      velocityVector[1] = -0.5f;
-    }
-    
-    if(npos[2] < -10){
-      velocityVector[2] = 0.1f;
-    }
-    else if(npos[2] > 10){
-      velocityVector[2] = -0.1f;
-    }
+
 
     mecanum.calculate(velocityVector, duty, current_angle);
 
@@ -83,39 +99,40 @@ int main() {
   }
 }
 
-union a{float f; unsigned char uc[4];};
+union RecConverter{float f; unsigned char uc[4];};
 
 vector<unsigned char> data;
 bool rec_enable = false;
-void Receive(){
-  a pos[3];
 
-  while (pc.readable())
+void Receive(){
+  RecConverter rec_pos[3];
+
+  if (pc.readable())
   {
     unsigned char rec = pc.getc();
     if(rec == 0x80){
       rec_enable = true;
-      data.clear();
     }
-    // pc.gets(rec,2);
-    // pc.putc(pc.getc());
-    // data.push_back(pc.getc());
     if(rec_enable)
       data.push_back(rec);
-  
   }
 
     
-  if(data.size() >= 0){
+  if(data.size() == DATA_LEN){
     led = !led.read();
-    for(int i=0; i<3; i++){
-      pos[i].uc[0] = data[i];
-    }
-    frame_init = data[6];
+    for(int j=0; j<3; j++)
+      for(int i=0; i<4; i++){
+        rec_pos[j].uc[i] = data[j*4 + i+1];
+      }
 
-    for(auto c:data)
-      pc.putc(c);
+    frame_init = data[data.size() - 2];
+    ems = data[data.size() - 1];
+
+    if(frame_init)
+      for(int i=0; i<3; i++)
+        npos[i] = rec_pos[i].f;
     
+    data.clear();    
     rec_enable = false;
   }
 
