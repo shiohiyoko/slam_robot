@@ -13,6 +13,8 @@ enum eTrackingState{
         OK=2,
         LOST=3
 };
+union RecConverter{float f; unsigned char uc[4];};
+
 DigitalOut led(LED3);
 
 Omni mecanum(4);
@@ -27,7 +29,7 @@ Serial pc(USBTX,USBRX);
 
 float duty[4] = {};
 float velocityVector[3] = {};
-float current_angle = -90.0f*3.14f/180.0f;
+float angle_correction = -90.0f;
 
 float rec_buf[DATA_LEN] = {};
 int rec_index = 0;
@@ -41,41 +43,47 @@ int dir = 0;
 //カメラが自分の位置を見失っていないか
 int frame_init = eTrackingState::SYSTEM_NOT_READY;
 
+float standard_angle = angle_correction;
+
+vector<RecConverter> send_buf(4);
+
+
 //受信
 void Receive();
+//送信
+void Send();
 //受信データの解析
 void Decode(char keys);
 
 int main() {
-  wheel_pwm[0].period_us(500);
   pc.baud(9600);
   // put your setup code here, to run once:
 
   while(1) {
     LoopTimer.start();
 
-    for(int i=0; i<3; i++) velocityVector[i] = 0.0f;
     Receive();
+
+    for(int i=0; i<3; i++) velocityVector[i] = 0.0f;
 
     if(!ems){
       if(frame_init == eTrackingState::OK){
-        velocityVector[1] = 0.3f;
-      }
-      else
-      {
-        velocityVector[1] = -0.3f;
-      }
+        velocityVector[1] = 0.6f;
       
-      if(npos[2] < -10){
-        velocityVector[2] = 0.1f;
+        if(npos[2] < standard_angle){
+          velocityVector[2] = 0.1f;
+        }
+        else if(npos[2] > standard_angle){
+          velocityVector[2] = -0.1f;
+        }
       }
-      else if(npos[2] > 10){
-        velocityVector[2] = -0.1f;
+      else if(frame_init == eTrackingState::LOST)
+      {
+        velocityVector[1] = -0.6f;
       }
     }
 
-
-    mecanum.calculate(velocityVector, duty, current_angle);
+    mecanum.calculate(velocityVector, duty, npos[2], false);
 
     for(int i=0; i<4; i++){
       wheel_dir[i][0] = (duty[i] < 0)? 1:0;
@@ -86,20 +94,14 @@ int main() {
       if(duty[i] < 0)
         duty[i] *= -1.0f;
       wheel_pwm[i] = duty[i];
-      // wheel_pwm[i] = 1.0f;
-      // wheel_dir[i][0] = 0;
-      // wheel_dir[i][1] = 1;
     }
-    // pc.printf("0:%f, 1:%f, 2:%f, 3:%f,\r\n",duty[0],duty[1], duty[2], duty[3]);
-    // pc.printf("hello world\r\n");
 
-    while(LoopTimer.read_us() < 500);
+    while(LoopTimer.read_ms() < 1);
     LoopTimer.stop();
     LoopTimer.reset();  
   }
 }
 
-union RecConverter{float f; unsigned char uc[4];};
 
 vector<unsigned char> data;
 bool rec_enable = false;
@@ -119,7 +121,6 @@ void Receive(){
 
     
   if(data.size() == DATA_LEN){
-    led = !led.read();
     for(int j=0; j<3; j++)
       for(int i=0; i<4; i++){
         rec_pos[j].uc[i] = data[j*4 + i+1];
@@ -128,10 +129,12 @@ void Receive(){
     frame_init = data[data.size() - 2];
     ems = data[data.size() - 1];
 
-    if(frame_init)
+    if(frame_init == eTrackingState::OK){
       for(int i=0; i<3; i++)
         npos[i] = rec_pos[i].f;
-    
+      npos[2] += angle_correction;
+    }
+
     data.clear();    
     rec_enable = false;
   }
@@ -165,4 +168,10 @@ void Decode(char keys){
   led = 0;
     break;
   }
+}
+
+void Send(){
+  for(auto c:send_buf)
+    for(auto a:c.uc)
+      pc.putc(a);
 }
